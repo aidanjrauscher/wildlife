@@ -6,15 +6,19 @@ import Filters from './components/Filters.jsx';
 import SpeciesCard from './components/SpeciesCard.jsx';
 import SpeciesPage from './pages/SpeciesPage.jsx';
 import { geocodeAddress } from './lib/geocode';
-import { fetchAllSpecies } from './lib/inat';
+import { fetchAllSpecies, isCoastal, fetchOffshoreCandidates } from './lib/inat';
+import { lookupHabitats } from './lib/worms';
+import { classifyHabitat, isMarine } from './lib/habitat';
+import { binomial } from './lib/natureserveCore';
 import { loadDetails, getCachedDetail } from './lib/wiki';
-import { GROUPS, RADIUS_MILES } from './lib/groups';
+import { GROUPS, RADIUS_MILES, EXTENDED_RADIUS_MILES } from './lib/groups';
 import { loadState, verify } from './lib/natureserve';
 import { stateForCoords, toStateCode, STATE_NAMES } from './lib/states';
 
 const PAGE = 60;
 
-const EMPTY_FILTERS = { groups: new Set(), colors: new Set(), size: '', text: '', sort: 'count', verification: new Set(), hideUndocumented: true };
+const EMPTY_FILTERS = { groups: new Set(), colors: new Set(), size: '', text: '', sort: 'count', verification: new Set(), hideUndocumented: true, habitats: new Set(), includeOffshore: true };
+const EMPTY_OFFSHORE = { status: 'idle', species: [], error: '' };
 const EMPTY_VERIFICATION = { state: null, status: 'idle', indexes: {}, errors: [] };
 
 export default function App() {
@@ -32,6 +36,8 @@ export default function App() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [limit, setLimit] = useState(PAGE);
   const [verification, setVerification] = useState(EMPTY_VERIFICATION);
+  const [worms, setWorms] = useState({}); // binomial -> WoRMS record | null
+  const [offshore, setOffshore] = useState(EMPTY_OFFSHORE);
   const abortRef = useRef(null);
 
   const abortInFlight = () => {
@@ -40,6 +46,43 @@ export default function App() {
     return abortRef.current.signal;
   };
 
+  const mergeWorms = (map) => setWorms((w) => ({ ...w, ...Object.fromEntries(map) }));
+
+  /**
+   * Coastal extension: if marine-only taxa are observed within 30 miles, fetch
+   * the species seen within 30 miles but not 10, keep the ones WoRMS flags as
+   * marine or brackish, and add them as "offshore" species.
+   */
+  const loadOffshore = useCallback(async (loc, native, base, signal) => {
+    setOffshore({ status: 'checking', species: [], error: '' });
+    try {
+      const coastal = await isCoastal(loc, signal);
+      if (signal.aborted) return;
+      if (!coastal) {
+        setOffshore({ status: 'inland', species: [], error: '' });
+        return;
+      }
+      setOffshore({ status: 'loading', species: [], error: '' });
+      const candidates = await fetchOffshoreCandidates(
+        { lat: loc.lat, lng: loc.lng, nativeOnly: native },
+        new Set(base.map((sp) => sp.id)),
+        signal,
+      );
+      const flags = await lookupHabitats(candidates.map((c) => c.name), { onBatch: mergeWorms }, signal);
+      if (signal.aborted) return;
+      const marine = candidates
+        .filter((c) => {
+          const rec = flags.get(binomial(c.name));
+          return rec && (rec.marine || rec.brackish);
+        })
+        .map((c) => ({ ...c, offshore: true, radiusMiles: EXTENDED_RADIUS_MILES }));
+      setOffshore({ status: 'ready', species: marine, error: '' });
+      await loadDetails(marine, { onBatch: (map) => setDetails((d) => ({ ...d, ...Object.fromEntries(map) })) }, signal);
+    } catch (err) {
+      if (err.name !== 'AbortError') setOffshore({ status: 'error', species: [], error: err.message });
+    }
+  }, []);
+
   const loadSpecies = useCallback(async (loc, native, signal) => {
     setStatus('loading');
     setGroupsData({});
@@ -47,6 +90,8 @@ export default function App() {
     setDetailProgress({ done: 0, total: 0 });
     setWarnings([]);
     setLimit(PAGE);
+    setWorms({});
+    setOffshore(EMPTY_OFFSHORE);
 
     const collected = [];
     const { failures } = await fetchAllSpecies(
@@ -67,15 +112,19 @@ export default function App() {
       if (cached) seeded[sp.id] = cached;
     }
     setDetails(seeded);
-    await loadDetails(
-      collected,
-      {
-        onBatch: (map) => setDetails((d) => ({ ...d, ...Object.fromEntries(map) })),
-        onProgress: (done, total) => setDetailProgress({ done, total }),
-      },
-      signal,
-    );
-  }, []);
+    await Promise.all([
+      loadDetails(
+        collected,
+        {
+          onBatch: (map) => setDetails((d) => ({ ...d, ...Object.fromEntries(map) })),
+          onProgress: (done, total) => setDetailProgress({ done, total }),
+        },
+        signal,
+      ),
+      lookupHabitats(collected.map((sp) => sp.name), { onBatch: mergeWorms }, signal),
+      loadOffshore(loc, native, collected, signal),
+    ]);
+  }, [loadOffshore]);
 
   /**
    * Run a search. `input` is either a free-text address (geocoded server-side)
@@ -168,7 +217,25 @@ export default function App() {
     return () => controller.abort();
   }, [location]);
 
-  const allSpecies = useMemo(() => GROUPS.flatMap((g) => groupsData[g.key]?.species ?? []), [groupsData]);
+  const allSpecies = useMemo(
+    () => [...GROUPS.flatMap((g) => groupsData[g.key]?.species ?? []), ...(filters.includeOffshore ? offshore.species : [])],
+    [groupsData, offshore.species, filters.includeOffshore],
+  );
+
+  const habitats = useMemo(() => {
+    const out = {};
+    for (const sp of allSpecies) {
+      const key = binomial(sp.name);
+      out[sp.id] = classifyHabitat(sp, key in worms ? worms[key] : undefined);
+    }
+    return out;
+  }, [allSpecies, worms]);
+
+  const habitatCounts = useMemo(() => {
+    const out = {};
+    for (const h of Object.values(habitats)) if (h) for (const k of h.habitats) out[k] = (out[k] || 0) + 1;
+    return out;
+  }, [habitats]);
 
   const groupCounts = useMemo(() => {
     const out = {};
@@ -179,11 +246,11 @@ export default function App() {
   const statuses = useMemo(() => {
     const out = {};
     for (const sp of allSpecies) {
-      const v = verify(sp, verification.indexes[sp.group]);
+      const v = verify(sp, verification.indexes[sp.group], isMarine(habitats[sp.id]));
       if (v) out[sp.id] = v;
     }
     return out;
-  }, [allSpecies, verification.indexes]);
+  }, [allSpecies, verification.indexes, habitats]);
 
   const statusCounts = useMemo(() => {
     const out = {};
@@ -198,6 +265,10 @@ export default function App() {
       const v = statuses[sp.id];
       if (filters.hideUndocumented && v?.status === 'undocumented') return false;
       if (filters.verification.size && (!v || !filters.verification.has(v.status))) return false;
+      if (filters.habitats.size) {
+        const h = habitats[sp.id];
+        if (!h || !h.habitats.some((k) => filters.habitats.has(k))) return false;
+      }
       const d = details[sp.id];
       if (filters.colors.size) {
         if (!d) return false;
@@ -218,13 +289,13 @@ export default function App() {
       list.sort((a, b) => b.count - a.count);
     }
     return list;
-  }, [allSpecies, details, filters, statuses]);
+  }, [allSpecies, details, filters, statuses, habitats]);
 
   useEffect(() => setLimit(PAGE), [filters]);
 
   const searchPage = (
     <SearchPage
-      {...{ query, location, status, error, warnings, nativeOnly, setNativeOnly, groupsData, details, detailProgress, filters, setFilters, limit, setLimit, allSpecies, groupCounts, filtered, search, verification, statuses, statusCounts }}
+      {...{ query, location, status, error, warnings, nativeOnly, setNativeOnly, groupsData, details, detailProgress, filters, setFilters, limit, setLimit, allSpecies, groupCounts, filtered, search, verification, statuses, statusCounts, habitats, habitatCounts, offshore }}
     />
   );
 
@@ -239,7 +310,7 @@ export default function App() {
 
 function SearchPage({
   query, location, status, error, warnings, nativeOnly, setNativeOnly, groupsData, details, detailProgress,
-  filters, setFilters, limit, setLimit, allSpecies, groupCounts, filtered, search, verification, statuses, statusCounts,
+  filters, setFilters, limit, setLimit, allSpecies, groupCounts, filtered, search, verification, statuses, statusCounts, habitats, habitatCounts, offshore,
 }) {
   const hiddenUndocumented = filters.hideUndocumented ? statusCounts.undocumented || 0 : 0;
   const busy = status === 'geocoding' || status === 'loading';
@@ -303,6 +374,30 @@ function SearchPage({
                 <span className="text-xs text-stone-400">(uncheck to include introduced species)</span>
               </label>
             </div>
+            <div className="mt-3 text-sm text-stone-700">
+              {offshore.status === 'checking' ? <span className="text-stone-500">Checking whether this location is coastal…</span> : null}
+              {offshore.status === 'inland' ? (
+                <span className="text-stone-500">Inland location: the {RADIUS_MILES}-mile radius applies to all species.</span>
+              ) : null}
+              {offshore.status === 'loading' ? (
+                <span className="text-stone-500">🌊 Coastal location: loading marine life up to {EXTENDED_RADIUS_MILES} miles offshore…</span>
+              ) : null}
+              {offshore.status === 'error' ? <span className="text-amber-700">Offshore check failed: {offshore.error}</span> : null}
+              {offshore.status === 'ready' ? (
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={filters.includeOffshore}
+                    onChange={(e) => setFilters((f) => ({ ...f, includeOffshore: e.target.checked }))}
+                    className="h-4 w-4 accent-moss-600"
+                  />
+                  🌊 Coastal location: include marine life found up to {EXTENDED_RADIUS_MILES} miles offshore
+                  <span className="text-xs text-stone-400">
+                    ({offshore.species.length} marine species beyond {RADIUS_MILES} mi, per WoRMS habitat flags)
+                  </span>
+                </label>
+              ) : null}
+            </div>
             {status === 'loading' ? (
               <div className="mt-3">
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-stone-200">
@@ -328,7 +423,7 @@ function SearchPage({
         {location && (status === 'ready' || status === 'loading') ? (
           <>
             <section className="mb-5 rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
-              <Filters filters={filters} setFilters={setFilters} groupCounts={groupCounts} detailProgress={detailProgress} verification={verification} statusCounts={statusCounts} />
+              <Filters filters={filters} setFilters={setFilters} groupCounts={groupCounts} detailProgress={detailProgress} verification={verification} statusCounts={statusCounts} habitatCounts={habitatCounts} />
             </section>
 
             <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
@@ -351,7 +446,7 @@ function SearchPage({
 
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
               {filtered.slice(0, limit).map((sp) => (
-                <SpeciesCard key={sp.id} species={sp} detail={details[sp.id]} location={location} verification={statuses[sp.id]} state={verification.state} />
+                <SpeciesCard key={sp.id} species={sp} detail={details[sp.id]} location={location} verification={statuses[sp.id]} state={verification.state} habitat={habitats[sp.id]} />
               ))}
             </div>
 
@@ -384,7 +479,11 @@ function SearchPage({
           <a href="https://explorer.natureserve.org" className="underline" target="_blank" rel="noreferrer">
             NatureServe Explorer
           </a>{' '}
-          state records. Geocoding by the US Census Bureau, OpenStreetMap contributors and Photon. Color and size attributes are
+          state records. Habitat flags from the{' '}
+          <a href="https://www.marinespecies.org" className="underline" target="_blank" rel="noreferrer">
+            World Register of Marine Species
+          </a>
+          . Geocoding by the US Census Bureau, OpenStreetMap contributors and Photon. Color and size attributes are
           estimated from description text and may be imprecise.
         </p>
       </footer>

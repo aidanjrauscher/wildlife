@@ -60,12 +60,12 @@ export async function fetchTaxon(id, signal) {
 }
 
 /** Nearby research-grade observation count for a taxon. */
-export async function fetchNearbyCount(id, lat, lng, signal) {
+export async function fetchNearbyCount(id, lat, lng, signal, radiusKm = RADIUS_KM) {
   const params = new URLSearchParams({
     taxon_id: String(id),
     lat: String(lat),
     lng: String(lng),
-    radius: String(RADIUS_KM),
+    radius: String(radiusKm),
     quality_grade: 'research',
     per_page: '0',
   });

@@ -2,10 +2,12 @@ import { Link } from 'react-router-dom';
 import { GROUP_BY_KEY } from '../lib/groups';
 import { COLORS, formatSize } from '../lib/describe';
 import VerificationBadge from './VerificationBadge.jsx';
+import { HABITAT_BY_KEY } from '../lib/habitat';
+import { EXTENDED_RADIUS_MILES, RADIUS_MILES } from '../lib/groups';
 
 const COLOR_BY_KEY = Object.fromEntries(COLORS.map((c) => [c.key, c]));
 
-export default function SpeciesCard({ species, detail, location, verification, state }) {
+export default function SpeciesCard({ species, detail, location, verification, state, habitat }) {
   const group = GROUP_BY_KEY[species.group];
   const title = species.common || species.name;
   const summary = detail?.summary || '';
@@ -16,6 +18,7 @@ export default function SpeciesCard({ species, detail, location, verification, s
     params.set('loc', location.label);
   }
   if (state) params.set('st', state);
+  if (species.offshore) params.set('r', String(EXTENDED_RADIUS_MILES));
   const href = `/species/${species.id}${params.toString() ? `?${params}` : ''}`;
 
   return (
@@ -41,12 +44,29 @@ export default function SpeciesCard({ species, detail, location, verification, s
             {group.emoji} {group.label}
           </span>
           {verification ? <VerificationBadge status={verification.status} state={state} className="absolute right-2 top-2" /> : null}
+          {species.offshore ? (
+            <span
+              title={`Observed within ${EXTENDED_RADIUS_MILES} miles offshore but not within ${RADIUS_MILES} miles`}
+              className="absolute bottom-2 left-2 rounded-full bg-sky-700/90 px-2 py-0.5 text-[11px] font-medium text-white shadow-sm"
+            >
+              🌊 Offshore · {EXTENDED_RADIUS_MILES} mi
+            </span>
+          ) : null}
         </div>
         <div className="p-3">
           <h3 className="font-semibold leading-tight text-stone-900">{title}</h3>
           {species.common ? <p className="text-sm italic text-stone-500">{species.name}</p> : null}
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
-            <span title="Research-grade iNaturalist observations within 10 miles">{species.count.toLocaleString()} obs.</span>
+            <span title={`Research-grade iNaturalist observations within ${species.radiusMiles || RADIUS_MILES} miles`}>
+              {species.count.toLocaleString()} obs.
+            </span>
+            {habitat ? (
+              <span className="flex items-center gap-1" title={`Habitat (${habitat.source === 'worms' ? 'WoRMS' : 'inferred from group'}): ${habitat.habitats.map((k) => HABITAT_BY_KEY[k].label).join(', ')}`}>
+                {habitat.habitats.map((k) => (
+                  <span key={k} aria-label={HABITAT_BY_KEY[k].label}>{HABITAT_BY_KEY[k].emoji}</span>
+                ))}
+              </span>
+            ) : null}
             {detail?.sizeCm ? <span title="Largest length mentioned in the description">{formatSize(detail.sizeCm)}</span> : null}
             {detail?.colors?.length ? (
               <span className="flex items-center gap-1" title={`Colors mentioned: ${detail.colors.join(', ')}`}>

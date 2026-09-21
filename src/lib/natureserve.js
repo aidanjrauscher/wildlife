@@ -8,7 +8,7 @@ import { GROUPS } from './groups';
  *   present      listed in the state without a native or exotic flag
  *   undocumented mammal, reptile or amphibian not on the state's list at all (likely escaped pet, vagrant or misidentification)
  *   visitor      bird not on the state's list; NatureServe tracks breeding/resident birds, so this usually means a migrant, winter visitor or vagrant
- *   unverified   fish or invertebrate not on the list; NatureServe's coverage of those groups is incomplete, so absence means little
+ *   unverified   fish, invertebrate or marine species not on the list; NatureServe's coverage of those is incomplete, so absence means little
  */
 export const STATUS_META = {
   native: { label: 'Native', short: 'Native', color: 'bg-emerald-600 text-white', icon: '✓' },
@@ -92,16 +92,20 @@ export async function loadState(state, onGroup, signal) {
   return results.filter((r) => r.status === 'rejected').map((r) => r.reason);
 }
 
-/** Look up one species in a loaded index. Returns { status, record } or null if the index is not loaded. */
-export function verify(species, index) {
+/**
+ * Look up one species in a loaded index. Returns { status, record } or null if
+ * the index is not loaded. Pass marine=true for species WoRMS flags as marine
+ * or brackish: NatureServe's marine coverage is patchy, so absence is not evidence.
+ */
+export function verify(species, index, marine = false) {
   if (!index) return null;
   const rec = index.get(binomial(species.name));
   if (rec) {
     const status = rec.exotic && !rec.native ? 'introduced' : rec.native ? 'native' : 'present';
     return { status, record: rec };
   }
+  if (marine || species.group === 'fish' || species.group === 'invertebrates') return { status: 'unverified', record: null };
   if (species.group === 'birds') return { status: 'visitor', record: null };
-  if (species.group === 'fish' || species.group === 'invertebrates') return { status: 'unverified', record: null };
   return { status: 'undocumented', record: null };
 }
 

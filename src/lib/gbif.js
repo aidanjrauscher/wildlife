@@ -14,11 +14,11 @@ async function count(params, signal) {
   return (await resp.json()).count ?? null;
 }
 
-export async function fetchGbifEvidence(scientificName, lat, lng, signal) {
+export async function fetchGbifEvidence(scientificName, lat, lng, signal, radiusKm = RADIUS_KM) {
   const match = await fetch(`${GBIF}/species/match?name=${encodeURIComponent(scientificName)}`, { signal }).then((r) => r.json());
   if (!match?.usageKey || match.matchType === 'NONE') return null;
   const key = match.usageKey;
-  const near = `taxonKey=${key}&geoDistance=${lat},${lng},${RADIUS_KM}km`;
+  const near = `taxonKey=${key}&geoDistance=${lat},${lng},${radiusKm}km`;
   const inst = INSTITUTIONAL.map((b) => `basisOfRecord=${b}`).join('&');
   const [specimens, institutional, total] = await Promise.all([
     count(`${near}&basisOfRecord=PRESERVED_SPECIMEN`, signal),
@@ -30,7 +30,7 @@ export async function fetchGbifEvidence(scientificName, lat, lng, signal) {
     specimens,
     institutional,
     total,
-    mapUrl: `https://www.gbif.org/occurrence/map?taxon_key=${key}&geo_distance=${lat},${lng},${RADIUS_KM}km`,
+    mapUrl: `https://www.gbif.org/occurrence/map?taxon_key=${key}&geo_distance=${lat},${lng},${radiusKm}km`,
     speciesUrl: `https://www.gbif.org/species/${key}`,
   };
 }

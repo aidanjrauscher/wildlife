@@ -20,3 +20,14 @@ export const GROUP_BY_KEY = Object.fromEntries(GROUPS.map((g) => [g.key, g]));
 /** Search radius: 10 miles, expressed in km for the iNaturalist API. */
 export const RADIUS_MILES = 10;
 export const RADIUS_KM = Math.round(RADIUS_MILES * 1.609344 * 100) / 100;
+
+/** Extended radius for marine life at coastal locations. */
+export const EXTENDED_RADIUS_MILES = 30;
+export const EXTENDED_RADIUS_KM = Math.round(EXTENDED_RADIUS_MILES * 1.609344 * 100) / 100;
+
+/** Groups worth re-querying offshore; amphibians are never marine. */
+export const OFFSHORE_GROUP_KEYS = ['fish', 'invertebrates', 'mammals', 'reptiles', 'birds'];
+
+export function milesToKm(mi) {
+  return Math.round(mi * 1.609344 * 100) / 100;
+}

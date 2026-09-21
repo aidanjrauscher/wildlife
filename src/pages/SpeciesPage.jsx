@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { track } from '@vercel/analytics';
-import { GROUP_BY_KEY, RADIUS_MILES } from '../lib/groups';
+import { GROUP_BY_KEY, RADIUS_MILES, EXTENDED_RADIUS_MILES, milesToKm } from '../lib/groups';
+import { lookupHabitats } from '../lib/worms';
+import { classifyHabitat, HABITAT_BY_KEY } from '../lib/habitat';
 import { COLORS, formatSize } from '../lib/describe';
 import { fetchTaxon, fetchLifeStagePhotos, fetchNearbyCount, LIFE_STAGES } from '../lib/taxon';
 import { getCachedDetail, loadDetails } from '../lib/wiki';
@@ -10,6 +12,7 @@ import RangeMap from '../components/RangeMap.jsx';
 import { fetchGbifEvidence } from '../lib/gbif';
 import { STATE_NAMES, toStateCode } from '../lib/states';
 import VerificationBadge from '../components/VerificationBadge.jsx';
+import { binomial as binomialName } from '../lib/natureserveCore';
 
 const COLOR_BY_KEY = Object.fromEntries(COLORS.map((c) => [c.key, c]));
 const STAGE_LABEL = Object.fromEntries(LIFE_STAGES.map((s) => [s.key, s.label]));
@@ -25,6 +28,8 @@ export default function SpeciesPage() {
   const hasPlace = Number.isFinite(lat) && Number.isFinite(lng) && params.has('lat');
   const placeLabel = params.get('loc') || '';
   const state = toStateCode(params.get('st'));
+  const radiusMiles = params.get('r') === String(EXTENDED_RADIUS_MILES) ? EXTENDED_RADIUS_MILES : RADIUS_MILES;
+  const radiusKm = milesToKm(radiusMiles);
 
   const [taxon, setTaxon] = useState(null);
   const [stages, setStages] = useState({});
@@ -36,6 +41,7 @@ export default function SpeciesPage() {
   const [check, setCheck] = useState(null); // NatureServe result
   const [gbif, setGbif] = useState(null);
   const [distribution, setDistribution] = useState(undefined); // undefined = loading, null = none
+  const [habitat, setHabitat] = useState(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -58,6 +64,7 @@ export default function SpeciesPage() {
     setCheck(null);
     setGbif(null);
     setDistribution(undefined);
+    setHabitat(null);
     fetchLifeStagePhotos(id, signal).then(setStages).catch(() => {});
     const base = seed || null;
     const withTaxon = base ? Promise.resolve(base) : fetchTaxon(id, signal);
@@ -66,20 +73,23 @@ export default function SpeciesPage() {
         fetchDistribution(t.name)
           .then((d) => !signal.aborted && setDistribution(d))
           .catch(() => !signal.aborted && setDistribution(null));
+        lookupHabitats([t.name], {}, signal)
+          .then((m) => !signal.aborted && setHabitat(classifyHabitat(t, m.get(binomialName(t.name)) ?? null)))
+          .catch(() => {});
         if (state) {
           const index = await loadStateGroup(state, t.group);
           if (!signal.aborted) setCheck(verify(t, index));
         }
         if (hasPlace) {
-          const ev = await fetchGbifEvidence(t.name, lat, lng, signal);
+          const ev = await fetchGbifEvidence(t.name, lat, lng, signal, radiusKm);
           if (!signal.aborted) setGbif(ev);
         }
       })
       .catch(() => {});
-    if (hasPlace) fetchNearbyCount(id, lat, lng, signal).then((n) => n != null && setNearby(n)).catch(() => {});
+    if (hasPlace) fetchNearbyCount(id, lat, lng, signal, radiusKm).then((n) => n != null && setNearby(n)).catch(() => {});
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, hasPlace, lat, lng, state]);
+  }, [id, hasPlace, lat, lng, state, radiusKm]);
 
   const sp = taxon || seed;
   const group = sp ? GROUP_BY_KEY[sp.group] : null;
@@ -145,7 +155,7 @@ export default function SpeciesPage() {
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-xl border border-stone-200 bg-white p-4 text-sm shadow-sm sm:grid-cols-3">
             {nearby != null ? (
               <div>
-                <dt className="text-xs uppercase tracking-wide text-stone-500">Within {RADIUS_MILES} mi</dt>
+                <dt className="text-xs uppercase tracking-wide text-stone-500">Within {radiusMiles} mi</dt>
                 <dd className="font-semibold text-stone-900">{nearby.toLocaleString()} obs.</dd>
                 {placeLabel ? <dd className="line-clamp-1 text-xs text-stone-400" title={placeLabel}>{placeLabel}</dd> : null}
               </div>
@@ -160,6 +170,14 @@ export default function SpeciesPage() {
               <div>
                 <dt className="text-xs uppercase tracking-wide text-stone-500">Size (approx.)</dt>
                 <dd className="font-semibold text-stone-900">{formatSize(detail.sizeCm)}</dd>
+              </div>
+            ) : null}
+            {habitat ? (
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-stone-500">Habitat ({habitat.source === 'worms' ? 'WoRMS' : 'inferred'})</dt>
+                <dd className="font-semibold text-stone-900">
+                  {habitat.habitats.map((k) => `${HABITAT_BY_KEY[k].emoji} ${HABITAT_BY_KEY[k].label}`).join(' · ')}
+                </dd>
               </div>
             ) : null}
             {taxon?.conservationStatus ? (
@@ -224,7 +242,7 @@ export default function SpeciesPage() {
               )}
             </div>
             <div className="rounded-lg border border-stone-100 bg-stone-50 p-3">
-              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-500">GBIF records within {RADIUS_MILES} mi</div>
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-500">GBIF records within {radiusMiles} mi</div>
               {!hasPlace ? (
                 <p className="text-sm text-stone-500">Open this species from a search to see nearby museum records.</p>
               ) : gbif === null ? (

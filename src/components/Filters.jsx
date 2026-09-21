@@ -2,6 +2,7 @@ import { GROUPS } from '../lib/groups';
 import { COLORS, SIZES } from '../lib/describe';
 import { STATUS_META } from '../lib/natureserve';
 import { STATE_NAMES } from '../lib/states';
+import { HABITATS } from '../lib/habitat';
 
 const STATUS_ORDER = ['native', 'introduced', 'present', 'undocumented', 'visitor', 'unverified'];
 
@@ -23,7 +24,7 @@ function Chip({ active, onClick, children, title }) {
   );
 }
 
-export default function Filters({ filters, setFilters, groupCounts, detailProgress, verification, statusCounts }) {
+export default function Filters({ filters, setFilters, groupCounts, detailProgress, verification, statusCounts, habitatCounts }) {
   const toggleSet = (key, value) =>
     setFilters((f) => {
       const next = new Set(f[key]);
@@ -32,7 +33,7 @@ export default function Filters({ filters, setFilters, groupCounts, detailProgre
     });
 
   const detailsLoading = detailProgress.total > 0 && detailProgress.done < detailProgress.total;
-  const anyActive = filters.groups.size || filters.colors.size || filters.size || filters.text || filters.verification.size || !filters.hideUndocumented;
+  const anyActive = filters.groups.size || filters.colors.size || filters.size || filters.text || filters.verification.size || !filters.hideUndocumented || filters.habitats.size;
   const stateName = verification.state ? STATE_NAMES[verification.state] || verification.state : null;
 
   return (
@@ -52,6 +53,22 @@ export default function Filters({ filters, setFilters, groupCounts, detailProgre
               </Chip>
             );
           })}
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-2 flex flex-wrap items-baseline gap-x-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
+          <span>Habitat</span>
+          <span className="font-normal normal-case tracking-normal text-stone-400">from WoRMS habitat flags; any selected habitat matches</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {HABITATS.map((h) => (
+            <Chip key={h.key} active={filters.habitats.has(h.key)} onClick={() => toggleSet('habitats', h.key)} title={h.hint}>
+              <span aria-hidden="true">{h.emoji}</span>
+              {h.label}
+              <span className={`text-xs ${filters.habitats.has(h.key) ? 'text-moss-100' : 'text-stone-400'}`}>{habitatCounts[h.key] || 0}</span>
+            </Chip>
+          ))}
         </div>
       </div>
 
@@ -191,7 +208,7 @@ export default function Filters({ filters, setFilters, groupCounts, detailProgre
         {anyActive ? (
           <button
             type="button"
-            onClick={() => setFilters((f) => ({ ...f, groups: new Set(), colors: new Set(), size: '', text: '', verification: new Set(), hideUndocumented: true }))}
+            onClick={() => setFilters((f) => ({ ...f, groups: new Set(), colors: new Set(), size: '', text: '', verification: new Set(), hideUndocumented: true, habitats: new Set() }))}
             className="font-medium text-moss-700 hover:underline"
           >
             Clear filters
